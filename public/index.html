@@ -67,7 +67,12 @@
             justify-content: center;
             background-color: #333;
             position: relative;
+        }
 
+        .camera img {
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain; /* This keeps the aspect ratio of the frame */
         }
 
         .no-signal {
@@ -125,7 +130,6 @@
         }
 
         #serverPopup button:not(.close-btn) {
-            padding: 3px 7px;
             padding: 10px 20px;
             background-color: #28a745;
             color: white;
@@ -203,6 +207,17 @@
     <script src="/socket.io/socket.io.js"></script>
     <script>
         const socket = io();
+        const cameras = {
+            1: undefined,
+            2: undefined,
+            3: undefined,
+            4: undefined,
+        }
+
+        function doesCameraIdExist(camId) {
+            // Überprüfen, ob die Kamera-ID existiert und ob sie nicht 'undefined' ist
+            return cameras.hasOwnProperty(camId) && cameras[camId] !== undefined;
+        }
 
         // Open and Close Popup
         function openPopup() {
@@ -237,6 +252,23 @@
             }
         }
 
+        // Handle connection status response
+        socket.on('connection_status', (data) => {
+            const statusDiv = document.getElementById('connectionStatus');
+            if (data.success) {
+                statusDiv.textContent = 'Connected';
+                statusDiv.classList.remove('disconnected');
+                statusDiv.classList.add('connected');
+                loadCameras();
+            } else {
+                statusDiv.textContent = 'Disconnected';
+                statusDiv.classList.remove('connected');
+                statusDiv.classList.add('disconnected');
+                alert('Connection failed: ' + data.error);
+                openPopup();
+            }
+        });
+
         // Save connection settings to localStorage
         function saveConnection() {
             const ip = document.getElementById('ip').value;
@@ -259,30 +291,22 @@
             }
         }
 
-        // Handle connection status response
-        socket.on('connection_status', (data) => {
-            const statusDiv = document.getElementById('connectionStatus');
-            if (data.success) {
-                statusDiv.textContent = 'Connected';
-                statusDiv.classList.remove('disconnected');
-                statusDiv.classList.add('connected');
-                loadCameras();
-            } else {
-                statusDiv.textContent = 'Disconnected';
-                statusDiv.classList.remove('connected');
-                statusDiv.classList.add('disconnected');
-                alert('Connection failed: ' + data.error);
-                openPopup();
-            }
-        });
-
         // Function to load camera IDs from localStorage
         function loadCameras() {
             for (let i = 1; i <= 4; i++) {
                 const camId = localStorage.getItem(`camera${i}`);
                 if (camId) {
+                    if (doesCameraIdExist(camId)) {
+                        showAddCam(i);
+                        localStorage.removeItem(`camera${i}`);
+                        continue;
+                    }
+                    
                     document.getElementById(`camera${i}`).innerHTML = `<span class="loading">Loading...</span>`;
                     socket.emit('fetch_camera_feed', { cameraId: camId, cameraIndex: i });
+
+                    // Listen for specific camera feed events
+                    addCameraFeedListener(camId, i);
                 } else {
                     showAddCam(i);
                 }
@@ -299,41 +323,67 @@
         function addCamera(cameraIndex) {
             const camId = prompt(`Enter Camera ID for Camera ${cameraIndex}`);
             if (camId) {
+                if (doesCameraIdExist(camId)) {
+                    alert("Camera ID already added!")
+                    return;
+                }
                 localStorage.setItem(`camera${cameraIndex}`, camId);
                 document.getElementById(`camera${cameraIndex}`).innerHTML = `<span class="loading">Loading...</span>`;
                 socket.emit('fetch_camera_feed', { cameraId: camId, cameraIndex });
+                // Listen for specific camera feed events
+                addCameraFeedListener(camId, cameraIndex);
             }
+        }
+
+        function addCameraFeedListener(camId, cameraIndex) {
+            cameras[cameraIndex] = camId;
+            socket.on(`camera_feed_${camId}`, (data) => {
+                const { cameraId, feed, hasSignal, error } = data;
+                const cameraDiv = document.getElementById(`camera${cameraIndex}`);
+
+                if (error) {
+                    if (error == "camera_already_subscribed") return;
+
+                    debugger;
+                    if (error == "camera_removed") showAddCam(cameraIndex); return;
+
+                    const errorText = error == "player_online" ? "Player Online" : "No Signal";
+
+                    // alert(`Failed to fetch camera ${cameraId}: ${error}`);
+                    console.log(`Failed to fetch camera ${camId}: ${JSON.stringify(error)}`);
+
+                    cameraDiv.innerHTML = `
+                    <span class="no-signal">${errorText}</span>
+                    <button class="remove-btn" onclick="removeCamera(${cameraIndex})">Remove Cam</button>
+                    `;
+                } else if (hasSignal) {
+                    console.log(camId, cameraId)
+                    debugger
+                    cameraDiv.innerHTML = `
+                        <img src="${feed}" alt="Camera ${cameraIndex} Feed" style="width: 100%; height: 100%; object-fit: contain;">
+                        <button class="remove-btn" onclick="removeCamera(${cameraIndex})">Remove Cam</button>
+                    `;
+                } else {
+                    cameraDiv.innerHTML = `
+                        <span class="no-signal">No Signal</span>
+                        <button class="remove-btn" onclick="removeCamera(${cameraIndex})">Remove Cam</button>
+                    `;
+                }
+            });
         }
 
         // Function to remove a camera
         function removeCamera(cameraIndex) {
-            localStorage.removeItem(`camera${cameraIndex}`);
-            showAddCam(cameraIndex);
-        }
-
-        // Event listener to receive camera feed from server
-        socket.on('camera_feed', (data) => {
-            const { cameraId, cameraIndex, feed, hasSignal, error } = data;
-            const cameraDiv = document.getElementById(`camera${cameraIndex}`);
-
-            if (error) {
-                alert(`Failed to fetch camera ${cameraId}: ${error}`);
-                cameraDiv.innerHTML = `
-                <span class="no-signal">No Signal</span>
-                <button class="remove-btn" onclick="removeCamera(${cameraIndex})">Remove Cam</button>
-                `;
-            } else if (hasSignal) {
-                cameraDiv.innerHTML = `
-                    <img src="${feed}" alt="Camera ${cameraIndex} Feed" style="width: 100%; height: 100%;">
-                    <button class="remove-btn" onclick="removeCamera(${cameraIndex})">Remove Cam</button>
-                `;
-            } else {
-                cameraDiv.innerHTML = `
-                    <span class="no-signal">No Signal</span>
-                    <button class="remove-btn" onclick="removeCamera(${cameraIndex})">Remove Cam</button>
-                `;
+            debugger;
+            const camId = localStorage.getItem(`camera${cameraIndex}`);
+            if (camId) {
+                cameras[cameraIndex] = undefined;
+                socket.off(`camera_feed_${camId}`)
+                localStorage.removeItem(`camera${cameraIndex}`);
+                showAddCam(cameraIndex);
+                socket.emit('remove_camera_feed', { cameraId: camId });
             }
-        });
+        }
 
         // Initialize cameras and connection on page load
         window.onload = function() {
