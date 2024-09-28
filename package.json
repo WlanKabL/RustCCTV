@@ -1,0 +1,26 @@
+{
+    "name": "rustplus-cctv",
+    "version": "1.0.0",
+    "description": "A web-based CCTV system for the game Rust using the Rust+ API. Allows users to stream and control multiple cameras in real-time.",
+    "main": "server.js",
+    "scripts": {
+        "start": "node server.js",
+        "test": "echo \"Error: no test specified\" && exit 1"
+    },
+    "keywords": [
+        "rustplus",
+        "rust",
+        "cctv",
+        "game integration",
+        "smart devices",
+        "websocket"
+    ],
+    "author": "WlanKabL",
+    "license": "MIT",
+    "dependencies": {
+        "@liamcottle/rustplus.js": "^2.5.0",
+        "express": "^4.17.1",
+        "http": "^0.0.1-security",
+        "socket.io": "^4.0.0"
+    }
+}
