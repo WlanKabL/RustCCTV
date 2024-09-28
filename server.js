@@ -1,7 +1,6 @@
 const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
-const fs = require('fs');
 const RustPlus = require('@liamcottle/rustplus.js');
 
 const app = express();
@@ -10,134 +9,190 @@ const io = socketIo(server);
 
 app.use(express.static('public'));
 
-let rustplus = null;
-let isConnected = false;  // Flag to check if the connection is successful
-const cameraSubscriptions = {};  // Store camera subscriptions
+// Store user clients by their socket ID
+const userClients = {};
 
-function initializeRustClient(ip, port, playerId, playerToken) {
-    rustplus = new RustPlus(ip, port, playerId, playerToken);
+// Create a RustPlus client for a specific camera
+function createRustClient(ip, port, playerId, playerToken) {
+    return new RustPlus(ip, port, playerId, playerToken);
 }
 
-// Listen for WebSocket connections
+// WebSocket connection handler
 io.on('connection', (socket) => {
-    console.log('Client connected');
+    console.log('Client connected:', socket.id);
 
-    // Event to set the connection settings
+    // Event to set the Rust+ connection for this user (general connection, if needed)
     socket.on('set_connection', async (data) => {
         const { ip, port, playerId, playerToken } = data;
+
         try {
-            initializeRustClient(ip, port, playerId, playerToken);
+            // Initialize an empty cameras array for the user if not already present
+            if (!userClients[socket.id]) {
+                console.log("Initialize UserClient for " + socket.id)
+                userClients[socket.id] = {
+                    rustPlusInstance: createRustClient(ip, port, playerId, playerToken),
+                    cameras: []
+                };
+            }
 
-            // Connect to Rust server
-            await new Promise((resolve, reject) => {
-                rustplus.connect();
-
-                rustplus.on('connected', () => {
-                    console.log('Connected to Rust+ server');
-                    isConnected = true; // Mark connection as successful
-                    resolve();
-                });
-
-                rustplus.on('error', (err) => {
-                    console.error('Error connecting to Rust+ server:', err);
-                    isConnected = false;
-                    reject(new Error(`Connection error: ${err.message || err}`));
-                });
-            });
-
-            // Send success response to the client
+            // Notify the frontend that the connection was successful
             socket.emit('connection_status', { success: true });
 
         } catch (error) {
             // Send failure response to the client with proper error message
-            console.error('Connection error:', error?.message || JSON.stringify(error));
-            socket.emit('connection_status', { success: false, error: error.error || error });
+            console.error('Connection error:', error?.error || JSON.stringify(error));
+            socket.emit('connection_status', { success: false, error: error.error || JSON.stringify(error) });
         }
     });
 
-    // Event to fetch camera feed
+    // Event to fetch camera feed for this user's camera
     socket.on('fetch_camera_feed', async (data) => {
-        const { cameraId, cameraIndex } = data;
+        const { cameraId, cameraIndex, ip, port, playerId, playerToken } = data;
+
+        // Ensure the user has an initialized client entry
+        const userClient = userClients[socket.id];
+        if (!userClient) {
+            socket.emit(`camera_feed_${cameraId}`, { hasSignal: false, error: 'Rust+ client not initialized' });
+            return;
+        }
+
+        // Check if this camera is already subscribed
+        const existingCamera = userClient.cameras.find((camera) => camera.camera.identifier === cameraId);
+        if (existingCamera) {
+            socket.emit(`camera_feed_${cameraId}`, { hasSignal: false, error: 'camera_already_subscribed' });
+            return;
+        }
 
         try {
-            console.log("Subscribing to:" + cameraId)
-            // Check if Rust client is connected
-            if (!isConnected) {
-                throw new Error('Rust+ client is not connected');
-            }
+            // Create a separate Rust+ instance for this camera
+            const cameraControllerInstance = createRustClient(ip, port, playerId, playerToken);
 
-            // If already subscribed to the camera, don't re-subscribe
-            if (cameraSubscriptions[cameraId] && cameraSubscriptions[cameraId].isSubscribed) {
-                cameraSubscriptions[cameraId]
-                return socket.emit(`camera_feed_${cameraId}`, { cameraId, hasSignal: false, error: "camera_already_subscribed" });
-            }
+            // Connect and subscribe to the camera
+            await new Promise((resolve, reject) => {
+                cameraControllerInstance.connect();
 
-            // Subscribe to camera
-            const camera = rustplus.getCamera(cameraId);
-            cameraSubscriptions[cameraId] = camera;  // Store the camera subscription
+                cameraControllerInstance.on('connected', async () => {
+                    try {
+                        console.log(`Connected to Rust+ server for camera ${cameraId}`);
 
-            // Listen for camera render event
-            camera.on('render', async (frame) => {
-                // Send camera feed as base64 PNG
-                const feed = `data:image/png;base64,${frame.toString('base64')}`;
-                socket.emit(`camera_feed_${cameraId}`, { cameraId, cameraIndex, feed, hasSignal: true });
+                        // Subscribe to the camera feed
+                        const camera = cameraControllerInstance.getCamera(cameraId);
+    
+                        camera.on('render', (frame) => {
+                            const feed = `data:image/png;base64,${frame.toString('base64')}`;
+                            socket.emit(`camera_feed_${cameraId}`, { cameraId, cameraIndex, feed, hasSignal: true });
+                        });
+    
+                        // Subscribe and catch errors
+                        await camera.subscribe().catch((error) => {
+                            if (error && error.error === "player_online") {
+                                socket.emit(`camera_feed_${cameraId}`, { cameraId, cameraIndex, feed: null, hasSignal: false, error: "player_online" });
+                                return;
+                            }
+                            console.log("Subscribe error: " + JSON.stringify(error));
+                            throw new Error(`Error subscribing to camera: ${error.error || JSON.stringify(error)}`);
+                        });
+    
+                        // Add the camera to the user's list of cameras
+                        userClient.cameras.push({
+                            cameraControllerInstance,
+                            camera: camera  // Store the actual camera instance
+                        });
+    
+                        resolve();
+                    } catch (error) {
+                        console.error(`Failed to fetch camera ${cameraId} for user ${socket.id}:`, error.error || JSON.stringify(error));
+                        socket.emit(`camera_feed_${cameraId}`, { hasSignal: false, error: error.error || error });
+                    }
+                });
 
-                // Optionally save to disk (for demonstration)
-                // fs.writeFileSync(`camera${cameraIndex}.png`, frame);
+                cameraControllerInstance.on('error', (err) => {
+                    console.error(`Error connecting to Rust+ for camera ${cameraId}:`, err);
+                    reject(err);
+                });
             });
-
-            // Subscribe to the camera feed
-            await camera.subscribe().catch((error) => {
-                if (error && error.error == "player_online") {
-                    socket.emit(`camera_feed_${cameraId}`, { cameraId, cameraIndex, feed: null, hasSignal: false, error: "player_online" });
-                    return;
-                }
-                console.log("Subscribe error: " + JSON.stringify(error))
-                throw new Error(`Error subscribing to camera: ${error.error || JSON.stringify(error) }`);
-            });
-
-            camera.on('error', (error) => {
-                console.error(`Error with camera ${cameraId}:`, JSON.stringify(error));
-                socket.emit(`camera_feed_${cameraId}`, { cameraId, cameraIndex, feed: null, hasSignal: false, error: error?.error || error });
-            });
-
         } catch (error) {
-            console.error(`Failed to fetch camera ${cameraId}:`, error.message || JSON.stringify(error));
-            socket.emit(`camera_feed_${cameraId}`, { cameraId, cameraIndex, feed: null, hasSignal: false, error: error?.error || error });
+            console.error(`Failed to fetch camera ${cameraId} for user ${socket.id}:`, error.error || JSON.stringify(error));
+            socket.emit(`camera_feed_${cameraId}`, { hasSignal: false, error: error.error || error });
         }
     });
 
-    // Event to remove camera feed subscription
-    socket.on('remove_camera_feed', (data) => {
+    // Event to remove the camera feed for this user
+    socket.on('remove_camera_feed', async (data) => {
         const { cameraId } = data;
 
-        // If camera is subscribed, unsubscribe and clean up
-        if (cameraSubscriptions[cameraId]) {
-            const camera = cameraSubscriptions[cameraId];
-            camera.unsubscribe().then(() => {
-                console.log(`Unsubscribed from camera ${cameraId}`);
-                delete cameraSubscriptions[cameraId];
-                socket.emit(`camera_feed_${cameraId}`, { cameraId, feed: null, hasSignal: false, error: "camera_removed" });
-            }).catch((error) => {
-                console.error(`Error unsubscribing from camera ${cameraId}:`, error);
-            });
-        } else {
-            console.log(`Camera ${cameraId} was not subscribed`);
+        // Get the user client
+        const userClient = userClients[socket.id];
+        if (!userClient) {
+            return;
+        }
+
+        // Find and remove the camera from the user's camera list
+        const cameraIndex = userClient.cameras.findIndex((camera) => camera.camera.identifier === cameraId);
+        if (cameraIndex !== -1) {
+            const cameraInstance = userClient.cameras[cameraIndex];
+
+            try {
+                // Unsubscribe and disconnect the camera
+                cameraInstance.camera.unsubscribe().then(() => {
+                    console.log(`Unsubscribed from camera ${cameraInstance.camera.identifier}`);
+
+                    // Remove the camera from the list
+                    userClient.cameras.splice(cameraIndex, 1);
+
+                    socket.emit(`camera_feed_${cameraInstance.camera.identifier}`, { cameraId: cameraInstance.camera.identifier, feed: null, hasSignal: false, error: "camera_removed" });
+
+                    //TODO: Waiting for https://github.com/liamcottle/rustplus.js/pull/70
+                    // try {
+                    //     cameraInstance.cameraControllerInstance.disconnect();
+                    // } catch (error) {
+                    //     console.log("Error disconnecting WebSocket:", error.message);
+                    // }
+                }).catch((error) => {
+                    console.error(`Error unsubscribing from camera ${cameraInstance.camera.identifier}:`, error);
+                });
+            } catch (error) {
+                console.error(`Failed to remove camera ${cameraInstance.camera.identifier} for user ${socket.id}:`, error.error || JSON.stringify(error));
+            }
         }
     });
 
-    socket.on('disconnect', () => {
-        console.log('Client disconnected');
-        isConnected = false;  // Mark connection as disconnected
+    // Handle client disconnect and cleanup
+    socket.on('disconnect', async () => {
+        console.log(`Client disconnected: ${socket.id}`);
 
-        // Unsubscribe from all cameras when client disconnects
-        for (const cameraId in cameraSubscriptions) {
-            const camera = cameraSubscriptions[cameraId];
-            camera.unsubscribe().then(() => {
-                console.log(`Unsubscribed from camera ${cameraId} on disconnect`);
-            }).catch((error) => {
-                console.error(`Error unsubscribing from camera ${cameraId} on disconnect:`, error);
-            });
+        // Get the Rust+ client for this user and disconnect all cameras
+        const userClient = userClients[socket.id];
+        if (userClient) {
+            try {
+                // Disconnect all camera instances for this user
+                for (const camera of userClient.cameras) {
+                    const cameraInstance = camera.camera;
+                    cameraInstance.unsubscribe().then(() => {
+                        console.log(`Unsubscribed from camera ${cameraInstance.identifier}`);
+                        socket.emit(`camera_feed_${cameraInstance.identifier}`, { cameraId, feed: null, hasSignal: false, error: "camera_removed" });
+                    }).catch((error) => {
+                        console.error(`Error unsubscribing from camera ${cameraInstance.identifier}:`, error);
+                    });
+
+                    //TODO: Waiting for https://github.com/liamcottle/rustplus.js/pull/70
+                    // try {
+                    //     camera.cameraControllerInstance.disconnect();
+                    // } catch (error) {
+                    //     console.log("Error disconnecting WebSocket:", error.message);
+                    // }
+                }
+
+                //TODO: Waiting for https://github.com/liamcottle/rustplus.js/pull/70
+                // userClient.rustPlusInstance.disconnect();
+
+                // Clean up the user's client
+                delete userClients[socket.id];
+                console.log(`Cleaned up Rust+ client for user ${socket.id}`);
+
+            } catch (error) {
+                console.error(`Error during cleanup for user ${socket.id}:`, error.error || JSON.stringify(error));
+            }
         }
     });
 });

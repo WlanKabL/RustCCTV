@@ -303,7 +303,11 @@
                     }
                     
                     document.getElementById(`camera${i}`).innerHTML = `<span class="loading">Loading...</span>`;
-                    socket.emit('fetch_camera_feed', { cameraId: camId, cameraIndex: i });
+                    const ip = localStorage.getItem('rust_ip');
+                    const port = localStorage.getItem('rust_port');
+                    const playerId = localStorage.getItem('rust_playerId');
+                    const playerToken = localStorage.getItem('rust_playerToken');
+                    socket.emit('fetch_camera_feed', { cameraId: camId, cameraIndex: i, ip, port, playerId, playerToken });
 
                     // Listen for specific camera feed events
                     addCameraFeedListener(camId, i);
@@ -329,7 +333,11 @@
                 }
                 localStorage.setItem(`camera${cameraIndex}`, camId);
                 document.getElementById(`camera${cameraIndex}`).innerHTML = `<span class="loading">Loading...</span>`;
-                socket.emit('fetch_camera_feed', { cameraId: camId, cameraIndex });
+                const ip = localStorage.getItem('rust_ip');
+                const port = localStorage.getItem('rust_port');
+                const playerId = localStorage.getItem('rust_playerId');
+                const playerToken = localStorage.getItem('rust_playerToken');
+                socket.emit('fetch_camera_feed', { cameraId: camId, cameraIndex, ip, port, playerId, playerToken });
                 // Listen for specific camera feed events
                 addCameraFeedListener(camId, cameraIndex);
             }
@@ -344,8 +352,10 @@
                 if (error) {
                     if (error == "camera_already_subscribed") return;
 
-                    debugger;
-                    if (error == "camera_removed") showAddCam(cameraIndex); return;
+                    if (error == "camera_removed") { 
+                        showAddCam(cameraIndex); 
+                        return;
+                    }
 
                     const errorText = error == "player_online" ? "Player Online" : "No Signal";
 
@@ -357,12 +367,18 @@
                     <button class="remove-btn" onclick="removeCamera(${cameraIndex})">Remove Cam</button>
                     `;
                 } else if (hasSignal) {
-                    console.log(camId, cameraId)
-                    debugger
-                    cameraDiv.innerHTML = `
+                    if (cameraDiv.innerHTML.includes('img')) {
+                        const imageTag = cameraDiv.getElementsByTagName("img")[0] ?? undefined;
+                        if (!imageTag) return;
+
+                        imageTag.outerHTML = `<img src="${feed}" alt="Camera ${cameraIndex} Feed" style="width: 100%; height: 100%; object-fit: contain;">`;
+                    } else {
+                        cameraDiv.innerHTML = `
                         <img src="${feed}" alt="Camera ${cameraIndex} Feed" style="width: 100%; height: 100%; object-fit: contain;">
                         <button class="remove-btn" onclick="removeCamera(${cameraIndex})">Remove Cam</button>
                     `;
+                    }
+                    
                 } else {
                     cameraDiv.innerHTML = `
                         <span class="no-signal">No Signal</span>
@@ -374,7 +390,6 @@
 
         // Function to remove a camera
         function removeCamera(cameraIndex) {
-            debugger;
             const camId = localStorage.getItem(`camera${cameraIndex}`);
             if (camId) {
                 cameras[cameraIndex] = undefined;
