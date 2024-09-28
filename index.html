@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rust CCTV Camera Feed</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: Arial, sans-serif;
+            background-color: #121212;
+            color: white;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .header {
+            margin-top: 20px;
+            font-size: 24px;
+        }
+
+        .form-container {
+            margin-top: 20px;
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        .form-group input {
+            padding: 10px;
+            font-size: 16px;
+            width: 300px;
+            background: #333;
+            color: #fff;
+            border: none;
+            border-radius: 5px;
+        }
+
+        .submit-btn {
+            padding: 10px 20px;
+            font-size: 16px;
+            background-color: #28a745;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+
+        .cameras {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 20px;
+            margin: 40px;
+        }
+
+        .camera {
+            width: 300px;
+            height: 200px;
+            background: #333;
+            color: #fff;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            border: 1px solid #555;
+        }
+
+        .status {
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">Rust CCTV Camera Feed</div>
+    <div class="status" id="status">Configure your Rust+ connection and camera feeds.</div>
+
+    <div class="form-container">
+        <div class="form-group">
+            <input type="text" id="serverIp" placeholder="Server IP">
+        </div>
+        <div class="form-group">
+            <input type="number" id="rustPort" placeholder="Rust+ Port (e.g., 28016)">
+        </div>
+        <div class="form-group">
+            <input type="text" id="playerId" placeholder="Player ID">
+        </div>
+        <div class="form-group">
+            <input type="text" id="playerToken" placeholder="Player Token">
+        </div>
+        <div class="form-group">
+            <input type="text" id="camera1Id" placeholder="Camera 1 ID">
+        </div>
+        <div class="form-group">
+            <input type="text" id="camera2Id" placeholder="Camera 2 ID">
+        </div>
+        <div class="form-group">
+            <input type="text" id="camera3Id" placeholder="Camera 3 ID">
+        </div>
+        <div class="form-group">
+            <input type="text" id="camera4Id" placeholder="Camera 4 ID">
+        </div>
+        <button class="submit-btn" onclick="window.connectToRustPlus()">Connect and Load Cameras</button>
+    </div>
+
+    <div class="cameras">
+        <div id="camera1" class="camera">Camera 1</div>
+        <div id="camera2" class="camera">Camera 2</div>
+        <div id="camera3" class="camera">Camera 3</div>
+        <div id="camera4" class="camera">Camera 4</div>
+    </div>
+    <script src="./bundle.js"></script>
+</body>
+</html>
+
+
