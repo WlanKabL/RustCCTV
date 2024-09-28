@@ -170,7 +170,7 @@ io.on('connection', (socket) => {
                     const cameraInstance = camera.camera;
                     cameraInstance.unsubscribe().then(() => {
                         console.log(`Unsubscribed from camera ${cameraInstance.identifier}`);
-                        socket.emit(`camera_feed_${cameraInstance.identifier}`, { cameraId, feed: null, hasSignal: false, error: "camera_removed" });
+                        socket.emit(`camera_feed_${cameraInstance.identifier}`, { cameraId: cameraInstance.identifier, feed: null, hasSignal: false, error: "camera_removed" });
                     }).catch((error) => {
                         console.error(`Error unsubscribing from camera ${cameraInstance.identifier}:`, error);
                     });
