@@ -3,14 +3,13 @@ const http = require("http");
 const socketIo = require("socket.io");
 const RustPlus = require("@liamcottle/rustplus.js");
 
-const FPS = 20; 
-const FRAME_INTERVAL = 1000 / FPS; // Time between frames in milliseconds
-
 const app = express();
 const server = http.createServer(app);
 const io = socketIo(server);
 
 app.use(express.static("public"));
+
+const fpsInterval = 1000 / 10;
 
 // Store user clients by their socket ID
 const userClients = {};
@@ -59,60 +58,158 @@ io.on("connection", (socket) => {
     });
 
     // Event to fetch camera feed for this user's camera
-    socket.on('fetch_camera_feed', async (data) => {
+    socket.on("fetch_camera_feed", async (data) => {
         const { cameraId, cameraIndex, ip, port, playerId, playerToken } = data;
-    
+
         // Ensure the user has an initialized client entry
         const userClient = userClients[socket.id];
         if (!userClient) {
-            socket.emit(`camera_feed_${cameraId}`, { hasSignal: false, error: 'Rust+ client not initialized' });
+            socket.emit(`camera_feed_${cameraId}`, {
+                hasSignal: false,
+                error: "Rust+ client not initialized",
+            });
             return;
         }
-    
+
+        // Check if this camera is already subscribed
+        const existingCamera = userClient.cameras.find(
+            (camera) => camera.camera.identifier === cameraId
+        );
+        if (existingCamera) {
+            socket.emit(`camera_feed_${cameraId}`, {
+                hasSignal: false,
+                error: "camera_already_subscribed",
+            });
+            return;
+        }
+
         try {
             // Create a separate Rust+ instance for this camera
-            const cameraControllerInstance = createRustClient(ip, port, playerId, playerToken);
-            
-            const camera = cameraControllerInstance.getCamera(cameraId);
-    
-            const subscribeToCamera = async () => {
-                await camera.subscribe().catch((error) => {
-                    if (error && error.error === "player_online") {
-                        socket.emit(`camera_feed_${cameraId}`, { cameraId, cameraIndex, feed: null, hasSignal: false, error: "player_online" });
-                        return;
-                    }
-                    console.log("Subscribe error: " + JSON.stringify(error));
-                    throw new Error(`Error subscribing to camera: ${error.error || JSON.stringify(error)}`);
-                });
+            const cameraControllerInstance = createRustClient(
+                ip,
+                port,
+                playerId,
+                playerToken
+            );
+
+            // Function to subscribe to the camera with error handling
+            const subscribeToCamera = async (camera) => {
+                try {
+                    await camera.subscribe().catch((error) => {
+                        if (error && error.error === "player_online") {
+                            socket.emit(`camera_feed_${cameraId}`, {
+                                cameraId,
+                                cameraIndex,
+                                feed: null,
+                                hasSignal: false,
+                                error: "player_online",
+                            });
+                            return;
+                        }
+                        console.log(
+                            "Subscribe error: " + JSON.stringify(error)
+                        );
+                        throw new Error(
+                            `Error subscribing to camera: ${
+                                error.error || JSON.stringify(error)
+                            }`
+                        );
+                    });
+                } catch (error) {
+                    console.error(
+                        `Failed to subscribe to camera ${cameraId}:`,
+                        error.message || error
+                    );
+                    socket.emit(`camera_feed_${cameraId}`, {
+                        hasSignal: false,
+                        error: error.message || error,
+                    });
+                }
             };
-    
-            const unsubscribeFromCamera = async () => {
-                await camera.unsubscribe().catch((error) => {
-                    console.error("Unsubscribe error:", error);
-                });
+
+            // Function to handle camera frames and resubscribe with an FPS limiter
+            const handleCameraFrames = async (camera) => {
+                try {
+                    camera.on("render", async (frame) => {
+                        const feed = `data:image/png;base64,${frame.toString(
+                            "base64"
+                        )}`;
+                        socket.emit(`camera_feed_${cameraId}`, {
+                            cameraId,
+                            cameraIndex,
+                            feed,
+                            hasSignal: true,
+                        });
+
+                        // Unsubscribe after receiving a frame
+                        await camera.unsubscribe();
+                        // console.log(`Unsubscribed from camera ${cameraId}`);
+
+                        // Wait for the FPS interval before subscribing again
+                        setTimeout(
+                            () => subscribeToCamera(camera),
+                            fpsInterval
+                        );
+                    });
+
+                    // Start with an initial subscription
+                    await subscribeToCamera(camera);
+                } catch (error) {
+                    console.error(
+                        `Failed to handle frames for camera ${cameraId}:`,
+                        error.message || error
+                    );
+                    socket.emit(`camera_feed_${cameraId}`, {
+                        hasSignal: false,
+                        error: error.message || error,
+                    });
+                }
             };
-    
-            camera.on('render', async (frame) => {
-                // Send the frame to the client
-                const feed = `data:image/png;base64,${frame.toString('base64')}`;
-                socket.emit(`camera_feed_${cameraId}`, { cameraId, cameraIndex, feed, hasSignal: true });
-    
-                // Unsubscribe immediately after receiving the frame
-                await unsubscribeFromCamera();
-    
-                // Set a timeout to resubscribe after the desired frame interval
-                setTimeout(subscribeToCamera, FRAME_INTERVAL);
+
+            // Connect to Rust+ and handle camera frames
+            await new Promise((resolve, reject) => {
+                cameraControllerInstance.connect();
+
+                cameraControllerInstance.on("connected", async () => {
+                    console.log(
+                        `Connected to Rust+ server for camera ${cameraId}`
+                    );
+
+                    // Subscribe to the camera feed
+                    const camera = cameraControllerInstance.getCamera(cameraId);
+
+                    // Handle camera frames with FPS control
+                    await handleCameraFrames(camera);
+
+                    // Add the camera to the user's list of cameras
+                    userClient.cameras.push({
+                        cameraControllerInstance,
+                        camera: camera, // Store the actual camera instance
+                    });
+
+                    resolve();
+                });
+
+                cameraControllerInstance.on("error", (err) => {
+                    console.error(
+                        `Error connecting to Rust+ for camera ${cameraId}:`,
+                        err
+                    );
+                    reject(err);
+                });
             });
-    
-            // Initial subscribe to the camera
-            await subscribeToCamera();
-    
         } catch (error) {
-            console.error(`Failed to fetch camera ${cameraId} for user ${socket.id}:`, error.message || error);
-            socket.emit(`camera_feed_${cameraId}`, { hasSignal: false, error: error.message || error });
+            console.error(
+                `Failed to fetch camera ${cameraId} for user ${socket.id}:`,
+                error.message || error
+            );
+            socket.emit(`camera_feed_${cameraId}`, {
+                hasSignal: false,
+                error: error.message || error,
+            });
         }
     });
-
+    
     // Event to remove the camera feed for this user
     socket.on("remove_camera_feed", async (data) => {
         const { cameraId } = data;
